@@ -44,46 +44,6 @@ class ProteinPredictorWithESM(nn.Module):
         x = self.fc2(x)  # Output layer (no activation, as we'll apply sigmoid later)
         return x
 
-# Define the convolutional model class
-class ProteinPredictorWithESMConv(nn.Module):
-    '''
-    this class defines a custom ESM model with a single added layer encoding a per token attribution value
-    '''
-    def __init__(self, esm_model, esm_layer, hidden_dim=128):
-        super(ProteinPredictorWithESMConv, self).__init__()
-        self.esm_model = esm_model  # Pre-trained ESM-2 model
-        self.esm_layer = esm_layer  # Layer from which to extract features
-        #self.fc1 = nn.Linear(self.esm_model.embed_dim, hidden_dim)
-        #self.conv1d = nn.Conv1d(in_channels=self.esm_model.embed_dim,out_channels=hidden_dim,kernel_size=3)
-        self.conv1d=nn.Conv1d(in_channels=1,out_channels=hidden_dim,kernel_size=3)
-        #self.fc1 = nn.Conv1d(1,1,kernel_size=1)
-        self.fc2 = nn.Linear(hidden_dim, 1)
-
-    def forward(self, batch_tokens, batch_lens):
-        '''
-        this function computes the updates for the model
-        '''
-        # Extract representations from ESM-2
-        results = self.esm_model(batch_tokens, repr_layers=[self.esm_layer], return_contacts=False)
-        token_representations = results["representations"][self.esm_layer]
-
-        # Generate per-sequence representations via averaging (skip the first and last tokens)
-        sequence_representations = []
-        for i, tokens_len in enumerate(batch_lens):
-            # Exclude special tokens (<cls> and <eos>)
-            sequence_representation = token_representations[i, 1 : tokens_len - 1].mean(0)
-            sequence_representations.append(sequence_representation)
-
-        # Stack sequence representations into a tensor
-        sequence_representations = torch.stack(sequence_representations).to(device)
-
-        # Pass through fully connected layers with ReLU activation
-        #print(sequence_representations.shape)
-        x = torch.relu(self.conv1d(sequence_representations))
-        x = torch.mean(x,dim=-1) #global average pooling (over the kernel dim?)
-        x = self.fc2(x)  # Output layer (no activation, as we'll apply sigmoid later)
-        return x
-
 class ProteinDataset(Dataset):
     '''
     this class defines a custom dataset for a pytorch dataloader
@@ -124,7 +84,7 @@ class ProteinDataset(Dataset):
         batch_lens = batch_lens.squeeze(0).long()
         return batch_tokens, batch_lens, torch.tensor([label], dtype=torch.float32)
 
-def compute_attributions(batch_tokens, batch_lens, model, esm_model, esm_layer, device, conv=False):
+def compute_attributions(batch_tokens, batch_lens, model, esm_model, esm_layer, device):
     """
     Compute attributions for each amino acid in the sequence.
 
@@ -157,16 +117,9 @@ def compute_attributions(batch_tokens, batch_lens, model, esm_model, esm_layer, 
         # Exclude <cls> and <eos> tokens
         seq_repr = token_representations[i, 1:tokens_len - 1]  # [seq_len - 2, embed_dim]
         # Pass through model's layers
-        if(not conv):
-            x1 = torch.relu(model.fc1(seq_repr))  # [seq_len - 2, hidden_dim]
-            x2 = model.fc2(x1)  # [seq_len - 2, 1]
-        else:
-            print(seq_repr.shape)
-            print(token_representations[i].shape)
-            x1 = torch.relu(model.conv1d(seq_repr))  # [seq_len - 2, hidden_dim]
-            x1 = torch.mean(x1,dim=-1) #global average pooling (over the kernel dim?)
-            x2 = model.fc2(x1)
-        
+        x1 = torch.relu(model.fc1(seq_repr))  # [seq_len - 2, hidden_dim]
+        x2 = model.fc2(x1)  # [seq_len - 2, 1]
+
         attributions.append(x2.squeeze(-1).detach().cpu().numpy())  # [seq_len - 2]
     return attributions
 
@@ -193,7 +146,7 @@ def makeDataLoader(df,batch_converter,colnames=['id','sequence','label'],shuffle
     )
     return visualization_loader
 
-def evaluateSeqs(dataloader,model,esm_model,esm_layer,device,maxlen=2000,verbose=True,usesigmoid=True,conv=False):
+def evaluateSeqs(dataloader,model,esm_model,esm_layer,device,maxlen=2000,verbose=True,usesigmoid=True):
     '''
     uses a fine-tuned esm2 model to predict a set of sequences from a data loader
     also return the attribution scores
@@ -216,7 +169,7 @@ def evaluateSeqs(dataloader,model,esm_model,esm_layer,device,maxlen=2000,verbose
         batch_lens = batch_lens.to(device)
 
         # Compute attributions
-        attributions = compute_attributions(batch_tokens, batch_lens, model, esm_model, esm_layer, device,conv)
+        attributions = compute_attributions(batch_tokens, batch_lens, model, esm_model, esm_layer, device)
         attr_outputs.append(attributions[0].flatten())
 
         # Get model predictions
@@ -245,13 +198,13 @@ def loadESMModel(nlayers=12,device='cpu'):
     # Freeze the ESM-2 model parameters to prevent training
     for param in esm_model.parameters():
         param.requires_grad = False
-    
+
     # Move the model to the device (CPU or GPU)
     esm_model = esm_model.to(device)
-    
+
     # Get the batch converter from the alphabet (list of amino acids)
     batch_converter = alphabet.get_batch_converter()
-    
+
     print("ESM-2 model loaded.")
     return esm_model,esmlayer,batch_converter,alphabet
 
@@ -261,22 +214,22 @@ def runTraining(model,optimizer,criterion,train_loader,val_loader,num_epochs=15,
     accuracies=[]
     val_losses=[]
     val_accuracies=[]
-    
+
     for epoch in range(num_epochs):
         model.train()  # Set the model to training mode
         total_loss = 0.0  # Initialize total loss for the epoch
         total_correct = 0.0
-        
+
         for batch_tokens, batch_lens, labels in tqdm(train_loader):
             # Move data to device
             batch_tokens = batch_tokens.to(device)
             batch_lens = batch_lens.to(device)
             labels = labels.to(device)
-            
+
             # Forward pass
             optimizer.zero_grad()  # Zero the gradients
             outputs = model(batch_tokens, batch_lens)  # Get model outputs
-            
+
             # Calculate loss and accuracy and backpropagate
             loss = criterion(outputs.view(-1), labels.view(-1))  # Compute loss
             if(not regression):
@@ -289,10 +242,10 @@ def runTraining(model,optimizer,criterion,train_loader,val_loader,num_epochs=15,
                 predlabels = (np.array(prob.cpu().detach().numpy()).flatten()).astype(float)
                 trainlabels = np.array(labels.cpu().detach().numpy()).flatten()
                 amountcorrect=(1.0-np.abs(predlabels-trainlabels)).sum()
-            
+
             loss.backward()  # Backpropagate the gradients
             optimizer.step()  # Update the model parameters
-            
+
             total_loss += loss.item()  # Accumulate loss
             total_correct += amountcorrect
 
@@ -318,7 +271,7 @@ def runTraining(model,optimizer,criterion,train_loader,val_loader,num_epochs=15,
                 amountcorrect=(1.0-np.abs(predlabels-vallabels)).sum()
             val_loss+=loss.item()
             val_correct+=amountcorrect
-            
+
         avg_loss = total_loss / len(train_loader)  # Calculate average loss for the epoch
         accuracy=total_correct / len(train_loader)
         val_avg_loss=val_loss/len(val_loader)
@@ -327,6 +280,6 @@ def runTraining(model,optimizer,criterion,train_loader,val_loader,num_epochs=15,
         accuracies.append(accuracy)
         val_losses.append(val_avg_loss)
         val_accuracies.append(val_acc)
-        
+
         print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {avg_loss:.4f}, Accuracy: {accuracy:.3f}, Val_Loss: {val_avg_loss:.4f}, Val_Accuracy: {val_acc:.3f}")
     return losses,accuracies,val_losses,val_accuracies
