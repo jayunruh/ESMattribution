@@ -186,6 +186,7 @@ def evaluateSeqs(dataloader,model,esm_model,esm_layer,device,maxlen=2000,verbose
 def loadESMModel(nlayers=12,device='cpu'):
     '''
     load the esm model from the torch hub
+    returns teh model, the representation layer, the batch converter, and the alphabet
     '''
     modeldict={12:"esm2_t12_35M_UR50D",30:"esm2_t30_150M_UR50D",
                33:"esm2_t33_650M_UR50D",36:"esm2_t36_3B_UR50D"}
@@ -209,7 +210,14 @@ def loadESMModel(nlayers=12,device='cpu'):
     return esm_model,esmlayer,batch_converter,alphabet
 
 def runTraining(model,optimizer,criterion,train_loader,val_loader,num_epochs=15,regression=False):
-    # Here is the training loop
+    '''
+    runs the training loop
+    inputs are the model (ProteinPredictorWithESM), pytorch optimizer, pytorch criterion function, 
+    pytorch training dataloader, pytorch validation dataloader, number of training epochs
+    regression trains to predict a floating point value rather than a category
+    accuracy for regression data is average of 1-|prediction-label|
+    the output is lists of training loss, training accuracy, validation loss, and validation accuracy
+    '''
     losses=[]
     accuracies=[]
     val_losses=[]
@@ -283,3 +291,21 @@ def runTraining(model,optimizer,criterion,train_loader,val_loader,num_epochs=15,
 
         print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {avg_loss:.4f}, Accuracy: {accuracy:.3f}, Val_Loss: {val_avg_loss:.4f}, Val_Accuracy: {val_acc:.3f}")
     return losses,accuracies,val_losses,val_accuracies
+
+def getESM2Representations(esm_model,batch_converter,seqs,rep_layer=12):
+    '''
+    gets the ESM2 representation matrices for the list of sequences
+    inputs are the model, the batch converter, the position of the representation layer, and the list of sequences
+    output is a list of representation layer matrices (
+    '''
+    # Extract per-residue representations
+    # set the model to eval mode
+    _=esm_model.eval()
+    reprs=[]
+    for i in tqdm(range(len(seqs))):
+        data=[('tlabel',seqs[i])]
+        batch_labels, batch_strs, batch_tokens = batch_converter(data)
+        with torch.no_grad():
+            result = esm_model(batch_tokens.to(device), repr_layers=[rep_layer], return_contacts=False)
+        reprs.append(result['representations'][rep_layer].cpu().numpy())
+    return reprs
