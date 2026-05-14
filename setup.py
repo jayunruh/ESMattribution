@@ -19,6 +19,6 @@ setup(
     license='GNU GPLv3',
     packages=find_packages(),
     python_requires='>=3.6',
-    install_requires=["matplotlib","numpy","pandas","scipy","sklearn","torch","torchvision"],
+    install_requires=["matplotlib","numpy","pandas","scipy","scikit-learn","torch","torchvision"],
     py_modules=['model_utils']
 )
