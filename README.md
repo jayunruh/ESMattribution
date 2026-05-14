@@ -3,7 +3,11 @@ Google colab notebooks to fine-tune ESM2 and obtain per residue attributions to 
 
 A preprint is in progress and will be linked when available.
 
-The underlying code is in the model_utils.py file.
+The underlying code is in the model_utils.py file.  You can install that code with dependencies as follows:
+
+```bash
+pip install git+https://github.com/jayunruh/ESMattribution
+```
 
 train_attribute_fraction_alpha.ipynb contains code for training a model to predict the alpha helical fraction of a protein trained on the yeast proteome AlphaFold database predictions.  The training data is in yeast_af_ssstats2.csv.  The first cells of the notebook copy the code and training data files from the github.  Note that you have to have a uniprot id to map the attributions onto the AlphaFold database structure at the end of the notebook.
 
